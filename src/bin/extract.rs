@@ -1,5 +1,5 @@
 
-use unzip::UnZip;
+use lib::UnZip;
 
 use std::env;
 use std::path::Path;
