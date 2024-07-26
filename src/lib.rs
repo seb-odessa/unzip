@@ -9,64 +9,61 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::{io, mem};
 
+
 pub struct UnZip {
-    pub archive: File,
-    pub destination: PathBuf,
+    archive: File,
+    destination: PathBuf,
 }
 impl UnZip {
     pub fn try_from<T: Into<PathBuf>>(name: T, destination: T) -> io::Result<Self> {
         let archive = File::open(name.into())?;
         let destination = destination.into();
-        Ok(Self { archive, destination })
+        Ok(Self { archive, destination})
     }
 
     pub fn file<T: Into<String>>(&mut self, name: T) -> Result<(), Box<dyn std::error::Error>> {
         let name = name.into();
+        let mut total_files: u64 = 0;
         EndOfCentralDirectoryRecord::search(&mut self.archive)?;
         loop {
             let signature = self.archive.read_u32::<LittleEndian>()?;
             match signature {
                 LocalFileHeader::SIGNATURE => {
                     let lfh = LocalFileHeader::from_reader(&mut self.archive)?;
-                    println!("Found LocalFileHeader: {}", lfh.file_name);
                     if name == lfh.file_name {
                         let destination = self.destination.join(name);
                         let mut ofile = File::create(&destination)?;
                         lfh.decompress_to(&mut self.archive, &mut ofile)?;
-                        break;
+                        return Ok(());
                     } else {
                         return Err(format!("Unexpected LFH").into());
                     }
                 }
                 CentralDirectoryHeader::SIGNATURE => {
                     let cdr = CentralDirectoryHeader::from_reader(&mut self.archive)?;
+                    total_files -= 1;
+
                     if name == cdr.file_name {
                         cdr.seek_to_local_file_header(&mut self.archive)?;
+                    } else if 0 == total_files {
+                        break;
                     }
                 }
                 Zip64EndOfCentralDirectoryLocator::SIGNATURE => {
-                    println!("Found Zip64EndOfCentralDirectoryLocator");
                     let locator = Zip64EndOfCentralDirectoryLocator::from_reader(&mut self.archive)?;
                     locator.seek_to_zip64_end_of_central_directory_record(&mut self.archive)?;
                 }
                 Zip64EndOfCentralDirectoryRecord::SIGNATURE => {
-                    println!("Found Zip64EndOfCentralDirectoryRecord");
                     let eocdr = Zip64EndOfCentralDirectoryRecord::from_reader(&mut self.archive)?;
+                    total_files = eocdr.total_number_of_entries_in_the_central_directory;
                     eocdr.seek_to_start_of_central_directory(&mut self.archive)?;
                 }
                 EndOfCentralDirectoryRecord::SIGNATURE => {
-                    println!("Found EndOfCentralDirectoryRecord");
                     let eocdr = EndOfCentralDirectoryRecord::from_reader(&mut self.archive)?;
-                    println!(
-                        "total records: {}",
-                        eocdr.total_number_of_entries_in_the_central_directory
-                    );
-                    println!("CD size: {}", eocdr.size_of_the_central_directory);
-                    println!("CD offset: {}", eocdr.offset_of_start_of_central_directory_with_respect_to_the_starting_disk_number);
                     if eocdr.is_zip64() {
-                        println!("Need use Zip64EndOfCentralDirectoryRecord");
                         eocdr.seek_to_zip64_eocdr_locator(&mut self.archive)?;
                     } else {
+                        total_files = eocdr.total_number_of_entries_in_the_central_directory as u64;
                         eocdr.seek_to_start_of_central_directory(&mut self.archive)?;
                     }
                 }
@@ -75,8 +72,7 @@ impl UnZip {
                 }
             }
         }
-
-        Ok(())
+        return Err(format!("The {name} is not found").into());
     }
 }
 
