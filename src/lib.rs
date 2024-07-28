@@ -4,11 +4,11 @@ extern crate byteorder;
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use flate2::read::DeflateDecoder;
+use log::{error, info};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::{io, mem};
-
 
 pub struct UnZip {
     archive: File,
@@ -16,13 +16,27 @@ pub struct UnZip {
 }
 impl UnZip {
     pub fn try_from<T: Into<PathBuf>>(name: T, destination: T) -> io::Result<Self> {
-        let archive = File::open(name.into())?;
+        let name = name.into();
         let destination = destination.into();
-        Ok(Self { archive, destination})
+
+        info!("UnZip{} -> {}", name.display(), destination.display());
+        let archive = File::open(name).inspect_err(|e| error!("{e}"))?;
+        let destination = destination;
+        Ok(Self {
+            archive,
+            destination,
+        })
     }
 
-    pub fn file<T: Into<String>>(&mut self, name: T) -> Result<(), Box<dyn std::error::Error>> {
-        let name = name.into();
+    pub fn file<T: Into<String>>(&mut self, file: T) -> Result<(), Box<dyn std::error::Error>> {
+        let file = file.into();
+        info!("UnZip.file <- {}", file);
+        let res = self.file_impl(file).inspect_err(|e| error!("{e}"))?;
+        info!("UnZip.file -> {}", res);
+        Ok(())
+    }
+
+    fn file_impl(&mut self, file: String) -> Result<String, Box<dyn std::error::Error>> {
         let mut total_files: u64 = 0;
         EndOfCentralDirectoryRecord::search(&mut self.archive)?;
         loop {
@@ -30,11 +44,11 @@ impl UnZip {
             match signature {
                 LocalFileHeader::SIGNATURE => {
                     let lfh = LocalFileHeader::from_reader(&mut self.archive)?;
-                    if name == lfh.file_name {
-                        let destination = self.destination.join(name);
+                    if file == lfh.file_name {
+                        let destination = self.destination.join(file);
                         let mut ofile = File::create(&destination)?;
                         lfh.decompress_to(&mut self.archive, &mut ofile)?;
-                        return Ok(());
+                        return Ok(destination.display().to_string());
                     } else {
                         return Err(format!("Unexpected LFH").into());
                     }
@@ -43,14 +57,15 @@ impl UnZip {
                     let cdr = CentralDirectoryHeader::from_reader(&mut self.archive)?;
                     total_files -= 1;
 
-                    if name == cdr.file_name {
+                    if file == cdr.file_name {
                         cdr.seek_to_local_file_header(&mut self.archive)?;
                     } else if 0 == total_files {
                         break;
                     }
                 }
                 Zip64EndOfCentralDirectoryLocator::SIGNATURE => {
-                    let locator = Zip64EndOfCentralDirectoryLocator::from_reader(&mut self.archive)?;
+                    let locator =
+                        Zip64EndOfCentralDirectoryLocator::from_reader(&mut self.archive)?;
                     locator.seek_to_zip64_end_of_central_directory_record(&mut self.archive)?;
                 }
                 Zip64EndOfCentralDirectoryRecord::SIGNATURE => {
@@ -72,7 +87,7 @@ impl UnZip {
                 }
             }
         }
-        return Err(format!("The {name} is not found").into());
+        return Err(format!("The {file} is not found in {:?}", self.archive).into());
     }
 }
 
